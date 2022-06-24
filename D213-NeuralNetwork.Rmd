@@ -15,11 +15,45 @@ subtitle: Sentiment Analysis using Neural Networks
 ---
 
 \newpage
+
 # Introduction
+
+  Prior to beginning the assigned sentiment analysis, we will provide some sense of the how this assignment fits into the overall context of our coursework so far and also prepare the environment for this project.
 
 ## Assignment Background
 
+  In our previous coursework, we were tasked by a popular hospital chain with analyzing several datasets, each with a slightly different focus.  Initially, we identified criteria to quantify risk levels for patient readmission within one month of their initial discharge. When provided with patient prescription histories, we uncovered patterns that revealed the potential for medication interaction risks.  Using patient survey data, we uncovered the existence of two specific groups of patients with distinct and diverging priorities so that the hospital can tailor individual marketing and patient care strategies more appropriately. Lastly, we provided daily revenue benchmarks against which policymakers can compare hospital revenue after implementing changes in policy or strategy to assess their relative success.
+  
+  For this assignment, we will 
+
 ## Initial Preparation
+
+```{r Desired Libraries}
+# Visualization Formatting
+library(gridExtra)
+library(viridis)
+
+# Visualization Font Import
+library(sysfonts)
+library(showtextdb)
+library(showtext)
+font_add("LM Roman 10", "./lmroman10-regular.otf")
+```
+
+
+
+
+  We will be loading a number of required libraries to perform some simple data manipulation (*dplyr* and *purr*), create visualizations (*ggplot2*), and to perform the bulk of the sentiment analysis analysis (*keras*).
+
+```{r Required Libraries}
+library(keras)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(tidytext)
+library(SnowballC)
+```
+
 
 
 \newpage
@@ -45,43 +79,173 @@ subtitle: Sentiment Analysis using Neural Networks
 # Part II:  Data Preparation
 ***
 
+  We will now import our selected data set prior to performing some exploratory data analysis and data preparation.
+  
+```{r Import Data}
+df <- readr::read_csv('./imdb_labelled.csv', col_names = FALSE)
+colnames(df) <- c('Review', 'Sentiment')
+df$Sentiment <- as.factor(df$Sentiment)
+summary(df)
+```
+
+
 
 ## B1: Exploratory Data Analysis
 
 > Summarize the data cleaning process by doing the following: Perform exploratory data analysis on the chosen dataset, and include an explanation of each of the following elements:
 
-•   presence of unusual characters (e.g., emojis, non-English characters, etc.)
+```{r DF Head}
+head(df)
+```
 
-•   vocabulary size
+### Unusual Characters 
 
-•   proposed word embedding length
+(e.g., emojis, non-English characters, etc.)
 
-•   statistical justification for the chosen maximum sequence length
+### Vocabulary Size
+
+  A very common problem with sentiment analysis using a body of text is that many of the words that we use with significant frequency do not convey any information about the feelings of the speaker. 
+  
+
+
+ 
+### Proposed Word Embedding Length
+
+
+
+### Statistical Justification for the chosen maximum sequence length
+
+
+```{r Review Length Histogram, echo=FALSE, fig.showtext=TRUE}
+a <- data.frame(nchar(df$Review))
+colnames(a) <- c('Length')
+
+ggplot(a, aes(x=Length)) + 
+  geom_histogram(binwidth=10, fill="#440154", color="#481567", aes(y=..density..)) +
+  geom_density(color="#21918c") +
+  labs(title = "Review Length Histogram",
+  y="Density", x="Number of Characters") +
+  theme(text = element_text(family = "LM Roman 10"))
+
+rm(a)
+```
+
+  We note that cutting off our review character length at $< 200$ leaves `r (sum(((nchar(df$Review)) <200) == TRUE)/1000)*100`% of the reviews untouched.  This also brings our maximum length down to less than half of the longest review in the original dataset.
+
+
+1. Add spaces after periods to avoid word confusion
+2. Split reviews into tokens separated by whitespace
+3. Converted all uppercase letters into lowercase
+4. Removed special characters and punctuations
+5. Removed non-alphabetic and non-numeric words
+6. Removed stop words from tokens
+7. Combine remaining tokens back into sentences
 
 
 ## B2: Tokenization
 
 > Summarize the data cleaning process by doing the following: Describe the goals of the tokenization process, including any code generated and packages that are used to normalize text during the tokenization process.
 
+tidytext
+
+  We will be reducing the text array in the review content column to individual words.
+  
+```{r}
+df.clean <- df %>%
+  unnest_tokens(word, Review)
+```
+
+ With the individual words separated, we will examine the most frequently used words in the text of the IMDb movie reviews.  We notice that the top twenty words in the body IMDb review texts do not convey the speakers feelings about the movie.
+ 
+
+```{r}
+df.clean %>%
+  count(word, sort=TRUE) %>%
+  head(20)
+```
+
+
+ We will remove these common stop words from the review content before proceeding.  This will help enforce the principle of least effort and remove words that do not help identify the sentiment of a body of text.
+  
+
+```{r Remove Stop Words}
+df.clean <- anti_join((unnest_tokens(df.clean, word, word)), stop_words)
+
+df.clean %>% count(word, sort = TRUE)
+```
+
+  Based on our cursory observation above, we note that some of the more common words can also be removed due to their sentiment neutrality.
+  
+```{r Custom Lexicon}
+custom <- add_row(stop_words, word="movie", lexicon="custom")
+custom <- add_row(custom, word="movies", lexicon="custom")
+custom <- add_row(custom, word="movie's", lexicon="custom")
+
+df.clean <- anti_join(df.clean, custom)
+
+df.clean %>% count(word, sort = TRUE)
+```
+
+  Lastly, for this section, we will apply a stemming function.  This will render some words slightly less human-readable but it will consolidate words with similar meanings but varying forms such that their overall impact isn't artificially weakened.
+
+```{r Word Stemming}
+df.clean <- mutate(df.clean, word = wordStem(word))
+
+df.clean %>% count(word, sort = TRUE)
+```
+
+
 ## B3: Padding
 
 > Summarize the data cleaning process by doing the following: Explain the padding process used to standardize the length of sequences, including the following in your explanation:
 
+  In order to make the body of the review text more compatible with a neural network analysis, we could one-hot-encode the arrays based on the $n$ most common words, creating an $n$-dimensional vector.  However, this would be considerably memory intensive; hence, we will choose to pad the arrays instead. 
+
+  Rather than one-hot encoding our text to $n$-dimensional vectors, we will coerce each of the arrays into having the same length regardless of the number of characters in the review itself.
+
+
+  
 •   if the padding occurs before or after the text sequence
 
 •   a screenshot of a single padded sequence
 
+
 ## B4: Sentiment Categories
 
-> Summarize the data cleaning process by doing the following:  Identify how many categories of sentiment will be used and an activation function for the final dense layer of the network.
+  Our selected dataset has two categories: positive and negative.  According to the data dictionary that accompanied the raw data, the sentiment values are coded numerically such that 1 indicates a positive sentiment and 0 indicates a negative sentiment (Kotzias et al, 2015).  The sentiment categories are evenly divided to reduce the potential for sample bias.
+
+```{r}
+summary(df.clean$Sentiment)
+```
+
 
 ## B5: Train/Test Split
 
-> Summarize the data cleaning process by doing the following: Explain the steps used to prepare the data for analysis, including the size of the training, validation, and test set split.
+  We will adhere to a fairly common 80/20 train/test split for the purposes of this project.
+
+```{r Test-Train Split}
+set.seed(213)
+split.index <- sample.int(nrow(df.clean), size = nrow(df)*0.8)
+df.train <- df.clean[split.index,]
+df.test <- df.clean[-split.index,]
+```
+
+```{r include=FALSE}
+rm(split.index)
+```
+
+
+
 
 ## B6: Data Export
 
-> Summarize the data cleaning process by doing the following: Provide a copy of the prepared dataset.
+  We will save the IMDb review data as a training set and a testing set as divided above using a pseudo-random sample function.
+
+```{r Data Export}
+write.csv(df.train, './nn_testing.csv', row.names = FALSE)
+write.csv(df.test, './nn_training.csv', row.names = FALSE)
+```
+
 
 
 
@@ -89,6 +253,9 @@ subtitle: Sentiment Analysis using Neural Networks
 ***
 # Part III:  Network Architecture
 ***
+
+
+
 
 ## C1: Model Summary
 
@@ -98,21 +265,90 @@ subtitle: Sentiment Analysis using Neural Networks
 
 > Describe the type of network used by doing the following: Discuss the number of layers, the type of layers, and total number of parameters.
 
+### Text Vectorization Layer
+
+  We define our text vectorization later here.  It will take our string input and convert that data to a tensor.
+  
+```{r Text Vectorization Layer Creation}
+num_words <- 10000
+max_length <- 10
+text_vectorization <- layer_text_vectorization(
+  max_tokens = num_words, 
+  output_sequence_length = max_length, 
+)
+```
+
+```{r Text Vectorization Layer Adaptation}
+text_vectorization %>% 
+  adapt(df.clean$word)
+head(get_vocabulary(text_vectorization))
+```
+
+
+```{r Text Vectorization Matrix}
+text_vectorization(matrix(df.clean$word[1], ncol = 1))
+```
+
+
+
 ## C3: Hyperparameters
 
 > Describe the type of network used by doing the following: Justify the choice of hyperparameters, including the following elements:
 
-•   activation functions
+```{r}
+input <- layer_input(shape = c(1), dtype = "string")
 
-•   number of nodes per layer
+output <- input %>% 
+  text_vectorization() %>% 
+  layer_embedding(input_dim = num_words + 1, output_dim = 16) %>%
+  layer_global_average_pooling_1d() %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dropout(0.5) %>% 
+  layer_dense(units = 1, activation = "sigmoid")
 
-•   loss function
+model <- keras_model(input, output)
+```
 
-•   optimizer
 
-•   stopping criteria
+### Loss Function
 
-•   evaluation metric
+  (reword) Since this is a binary classification problem and the model outputs a probability (a single-unit layer with a sigmoid activation), we’ll use the binary_crossentropy loss function.  We could, for instance, choose mean_squared_error. But, generally, binary_crossentropy is better for dealing with probabilities — it measures the “distance” between probability distributions, or in our case, between the ground-truth distribution and the predictions.
+  
+```{r Configure Loss Function, eval=FALSE}
+model %>% compile(loss = 'binary_crossentropy')
+```
+
+
+### Optimizer
+
+```{r Configure Optimizer, eval=FALSE}
+model %>% compile(optimizer = 'adam')
+```
+
+
+### Activation Functions
+
+  (reword) The last layer is densely connected with a single output node. Using the sigmoid activation function, this value is a float between 0 and 1, representing a probability, or confidence level.
+
+
+### Number of Nodes per Layer
+
+
+### Stopping Criteria
+
+
+### EvaluationMetric
+
+  Accuracy
+
+```{r}
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'binary_crossentropy',
+  metrics = list('accuracy')
+)
+```
+
 
 
 \newpage
@@ -120,13 +356,35 @@ subtitle: Sentiment Analysis using Neural Networks
 # Part IV:  Model Evaluation
 ***
 
+  With the network layers and parameters discussed above, we will not train and evaluate the model.
+  
+```{r Train the Model}
+history <- model %>% fit(
+            df.train$word,
+            as.numeric(df.train$Sentiment == 1),
+            epochs = 20,
+            batch_size = 100,
+            validation_split = 0.1,
+            verbose=2)
+```
+
+  
+
 ## D1: Final Epoch
 
 > Evaluate the model training process and its relevant outcomes by doing the following: Discuss the impact of using stopping criteria instead of defining the number of epochs, including a screenshot showing the final training epoch.
 
-## D2: Loss Evaluation
+
+
+## D2: Loss and Accuracy
 
 > Evaluate the model training process and its relevant outcomes by doing the following: Provide visualizations of the model’s training process, including a line graph of the loss and chosen evaluation metric.
+
+```{r Loss and Accuracy}
+results <- model %>% evaluate(df.test$word, as.numeric(df.test$Sentiment == 1), verbose = 0)
+results
+```
+
 
 ## D3: Model Fitness
 
@@ -135,6 +393,11 @@ subtitle: Sentiment Analysis using Neural Networks
 ## D4: Predictive Accuracy
 
 > Evaluate the model training process and its relevant outcomes by doing the following: Discuss the predictive accuracy of the trained network.
+
+```{r Graph of Accuracy}
+plot(history)
+```
+
 
 
 \newpage
@@ -145,6 +408,67 @@ subtitle: Sentiment Analysis using Neural Networks
 ## E: Code Copy
 
 > Provide the code used to save the trained network within the neural network.
+
+```{r Code Copy}
+df$Review %>% 
+  strsplit(" ") %>% 
+  sapply(length) %>% 
+  summary()
+
+set.seed(213)
+split.index <- sample.int(nrow(df), size = nrow(df)*0.8)
+training <- df[split.index,]
+testing <- df[-split.index,]
+
+num_words <- 10000
+max_length <- 50
+text_vectorization <- layer_text_vectorization(
+  max_tokens = num_words, 
+  output_sequence_length = max_length, 
+)
+
+
+text_vectorization %>% 
+  adapt(df$Review)
+
+head(get_vocabulary(text_vectorization))
+
+
+text_vectorization(matrix(df$Review[1], ncol = 1))
+
+
+input <- layer_input(shape = c(1), dtype = "string")
+
+output <- input %>% 
+  text_vectorization() %>% 
+  layer_embedding(input_dim = num_words + 1, output_dim = 16) %>%
+  layer_global_average_pooling_1d() %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dropout(0.5) %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+model <- keras_model(input, output)
+
+
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'binary_crossentropy',
+  metrics = list('accuracy')
+)
+
+history <- model %>% fit(
+            training$Review,
+            as.numeric(training$Sentiment == 1),
+            epochs = 20,
+            batch_size = 100,
+            validation_split = 0.1,
+            verbose=2)
+
+results <- model %>% evaluate(testing$Review, as.numeric(testing$Sentiment == 1), verbose = 0)
+results
+plot(history)
+```
+
 
 ## F: Code Functionality
 
@@ -180,5 +504,10 @@ subtitle: Sentiment Analysis using Neural Networks
 \newpage
 
 # References
+
+Kotzias, D., Denil, M., Freitas, N. & Smyth, P. 2015. From Group to Individual Labels Using Deep Features. In Proceedings of the 21th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD '15). Association for Computing Machinery, New York, NY, USA, 597–606. 
+https://doi.org/10.1145/2783258.2783380
+
+Maas, A., Daly, R., Pham, P.,  Huang, D., Ng, A. & Potts, C. (2011). Learning Word Vectors for Sentiment Analysis. 142-150. https://aclanthology.org/P11-1015
 
 RStudio Team (2022). RStudio: Integrated Development Environment for R. RStudio, PBC, Boston, MA. http://www.rstudio.com/.
