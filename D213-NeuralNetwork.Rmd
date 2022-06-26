@@ -31,7 +31,7 @@ subtitle: Sentiment Analysis using Neural Networks
 ```{r Desired Libraries}
 # Visualization Formatting
 library(gridExtra)
-library(viridis)
+library(viridisLite)
 
 # Visualization Font Import
 library(sysfonts)
@@ -41,19 +41,21 @@ font_add("LM Roman 10", "./lmroman10-regular.otf")
 ```
 
 
-
-
   We will be loading a number of required libraries to perform some simple data manipulation (*dplyr* and *purr*), create visualizations (*ggplot2*), and to perform the bulk of the sentiment analysis analysis (*keras*).
 
-```{r Required Libraries}
-library(keras)
-library(dplyr)
-library(ggplot2)
-library(purrr)
+
+```{r Required Libraries, message=FALSE, warning=FALSE}
+# Data Manipulation and Visualization
+library(tidyverse)
+library(magrittr)
 library(tidytext)
+
+# ML Libraries
+library(keras)
+library(mlbench)
+library(neuralnet)
 library(SnowballC)
 ```
-
 
 
 \newpage
@@ -64,6 +66,8 @@ library(SnowballC)
 ## A1: Research Question
 
 > Describe the purpose of this data analysis by doing the following:: Summarize one research question that you will answer using neural network models and NLP techniques. Be sure the research question is relevant to a real-world organizational situation and sentiment analysis captured in your chosen dataset.
+
+  
 
 ## A2: Research Objective
 
@@ -79,41 +83,176 @@ library(SnowballC)
 # Part II:  Data Preparation
 ***
 
-  We will now import our selected data set prior to performing some exploratory data analysis and data preparation.
+  We will first import our selected data sets.  This labeled data is similarly formatted and comes from three different sources: Amazon product reviews, IMDb movie reviews, and Yelp business reviews.  Each file contains the original text of the respective reviews and their human-assessed sentiment: positive or negative.
   
-```{r Import Data}
-df <- readr::read_csv('./imdb_labelled.csv', col_names = FALSE)
+### Data Import
+
+  We will be using the *readr* function imported as part of the *tidyverse*. There are no headers, so we will ensure that each row is condisereded as an observation and add our own labels at a later step. Each dataset will be imported individually and combined into a single dataframe afterward.
+  
+```{r Import Data, message=FALSE}
+df.imdb   <- readr::read_csv('./imdb_labelled.csv', col_names = FALSE)
+df.yelp   <- readr::read_csv('./yelp_labelled.csv', col_names = FALSE)
+df.amazon <- readr::read_csv('./amazon_cells_labelled.csv', col_names = FALSE)
+```
+
+### Data Concatenation
+
+  We will now amalgamate each of these data frames together using *rbind* and add appropriate column labels. We will convert the sentiment to *factor* data and print a *summary* of the resulting dataframe to examine its properties.
+
+```{r Combine Data}
+df <- rbind(df.amazon, df.yelp, df.imdb)
 colnames(df) <- c('Review', 'Sentiment')
 df$Sentiment <- as.factor(df$Sentiment)
 summary(df)
 ```
 
-
-
 ## B1: Exploratory Data Analysis
 
-> Summarize the data cleaning process by doing the following: Perform exploratory data analysis on the chosen dataset, and include an explanation of each of the following elements:
+  As we saw above in the dataframe summary, there are an equal number of positive and negative observations across the product, movie, and business reviews.  This will help ensure that we do not produce skewed results from a selction bias.
 
-```{r DF Head}
-head(df)
+```{r Sentiment Distribution, echo=FALSE, fig.height=2.5, fig.showtext=TRUE}
+df.amazon$X2 <- as.factor(df.amazon$X2)
+colnames(df.amazon) <- c('Review', 'Sentiment')
+amazon <- ggplot(df.amazon, aes( x = Sentiment, y = after_stat(count) ) ) + 
+            geom_bar(aes(fill = Sentiment), stat = "count", position = "dodge" ) +
+            labs(title = "Amazon",
+            y="Count", x=" ") +
+            theme(text = element_text(family = "LM Roman 10")) +
+            scale_fill_viridis_d(labels=c("Negative", "Positive")) +
+            theme(legend.position = "none")
+
+df.yelp$X2 <- as.factor(df.yelp$X2)
+colnames(df.yelp) <- c('Review', 'Sentiment')
+yelp <- ggplot(df.yelp, aes( x = Sentiment, y = after_stat(count) ) ) + 
+            geom_bar(aes(fill = Sentiment), stat = "count", position = "dodge" ) +
+            labs(title = "Yelp",
+            y=NULL, x="Sentiment") +
+            theme(text = element_text(family = "LM Roman 10")) +
+            scale_fill_viridis_d(labels=c("Negative", "Positive")) +
+            theme(legend.position = "none")
+
+df.imdb$X2 <- as.factor(df.imdb$X2)
+colnames(df.imdb) <- c('Review', 'Sentiment')
+imdb <- ggplot(df.imdb, aes( x = Sentiment, y = after_stat(count) ) ) + 
+            geom_bar(aes(fill = Sentiment), stat = "count", position = "dodge" ) +
+            labs(title = "IMDb",
+            y=NULL, x=" ") +
+            theme(text = element_text(family = "LM Roman 10")) +
+            scale_fill_viridis_d(labels=c("Negative", "Positive")) +
+            theme(legend.position = "none")
+
+grid.arrange(amazon, yelp, imdb, ncol=3)
+rm(amazon, yelp, imdb)
 ```
+
+  Now we will give our data a cursory examination prior to designing the neural network that we will use to classify the sentiment of each review using natural language processing.
+
+#### Amazon Data:
+
+  For context and our general awareness, we will examine the first five rows of the Amazon data set.
+  
+```{r Amazon Data Head}
+head(df[1:5,])
+```
+
+
+#### Yelp Data:
+
+  Similarly, we will examine the first five rows of observations from the Yelp dataset.
+
+```{r Yelp Data Head}
+head(df[1001:1005,])
+```
+
+
+#### IMDb Data:
+
+  Finally, we will examine the first five rows of movie review data from the IMDb dataset.
+
+```{r IMDb Data Head}
+head(df[2001:2005,])
+```
+
+
+\newpage
+
+### Lowercase Characters
+
+  In order to standardize the characters and ensure that like words are counted together, we will force all letters to lowercase.  This will also decrease the vector space required to store our data which will reduce the overall computational overhead.
+  
+#### Before:
+
+  As the data sets were provided, there is no standard format for user-generated input.  Most people use sentence case standards, this is neither consistent nor useful for our purposes.
+  
+```{r Lowercase Letters Before}
+head(df, n=3)
+```
+
+#### Conversion:
+
+  We will use the *tolower* function as part of the base R language to convert all character data to lowercase letters.
+  
+```{r Lowercase Letters Conversion}
+df$Review <- tolower(df$Review)
+```
+
+
+#### After:
+
+  Now, we see below that all letters are represented using lower case characters.
+
+```{r Lowercase Letters After}
+head(df, n=3)
+```
+
 
 ### Unusual Characters 
 
-(e.g., emojis, non-English characters, etc.)
+  In order to reduce the overall character set, we will want to address sentiment-agnostic characters like punctuation, emojis, non-English characters, etc.
+  
+#### Before:
+
+  We see below that the usage of special characters varies widely between proper punction to emjois.
+
+```{r Unusal Letters Before}
+head(df[grep("[^a-zA-Z0-9]", df$Review), ], n=10)
+```
+
+#### Conversion:
+
+  We will remove all unwanted unusual characters to reduce the extraneous portions of the vector space by replacing thost characters with spaces that will not be tokenized later on. 
+
+```{r}
+df$Review <- gsub("[^a-zA-Z0-9]", " ", df$Review)
+```
+
+
+#### After:
+
+  Now, we see below that all the special characters have been removed.
+  
+```{r}
+head(df[grep("[^a-zA-Z0-9]", df$Review), ], n=10)
+```
 
 ### Vocabulary Size
 
   A very common problem with sentiment analysis using a body of text is that many of the words that we use with significant frequency do not convey any information about the feelings of the speaker. 
   
+```{r}
+df %>%
+  unnest_tokens(word, Review) %>%
+  count(word) %>%
+  nrow()
+```
 
 
  
-### Proposed Word Embedding Length
+### Word Embedding Length
 
 
 
-### Statistical Justification for the chosen maximum sequence length
+### Maximum Sequence Length
 
 
 ```{r Review Length Histogram, echo=FALSE, fig.showtext=TRUE}
@@ -133,10 +272,7 @@ rm(a)
   We note that cutting off our review character length at $< 200$ leaves `r (sum(((nchar(df$Review)) <200) == TRUE)/1000)*100`% of the reviews untouched.  This also brings our maximum length down to less than half of the longest review in the original dataset.
 
 
-1. Add spaces after periods to avoid word confusion
-2. Split reviews into tokens separated by whitespace
-3. Converted all uppercase letters into lowercase
-4. Removed special characters and punctuations
+Split reviews into tokens separated by whitespace
 5. Removed non-alphabetic and non-numeric words
 6. Removed stop words from tokens
 7. Combine remaining tokens back into sentences
@@ -150,7 +286,7 @@ tidytext
 
   We will be reducing the text array in the review content column to individual words.
   
-```{r}
+```{r Tokenize Text}
 df.clean <- df %>%
   unnest_tokens(word, Review)
 ```
@@ -158,7 +294,7 @@ df.clean <- df %>%
  With the individual words separated, we will examine the most frequently used words in the text of the IMDb movie reviews.  We notice that the top twenty words in the body IMDb review texts do not convey the speakers feelings about the movie.
  
 
-```{r}
+```{r Distinct Word Count}
 df.clean %>%
   count(word, sort=TRUE) %>%
   head(20)
@@ -214,7 +350,7 @@ df.clean %>% count(word, sort = TRUE)
 
   Our selected dataset has two categories: positive and negative.  According to the data dictionary that accompanied the raw data, the sentiment values are coded numerically such that 1 indicates a positive sentiment and 0 indicates a negative sentiment (Kotzias et al, 2015).  The sentiment categories are evenly divided to reduce the potential for sample bias.
 
-```{r}
+```{r Clean Data Summary}
 summary(df.clean$Sentiment)
 ```
 
@@ -232,6 +368,28 @@ df.test <- df.clean[-split.index,]
 
 ```{r include=FALSE}
 rm(split.index)
+```
+
+
+```{r Test-Train Split Distribution, echo=FALSE, fig.showtext=TRUE, fig.height=3}
+test <- ggplot(df.train, aes( x = Sentiment, y = after_stat(count) ) ) + 
+            geom_bar(aes(fill = Sentiment), stat = "count", position = "dodge" ) +
+            labs(title = "Training Data",
+            y="Count", x=" ") +
+            theme(text = element_text(family = "LM Roman 10")) +
+            scale_fill_viridis_d(labels=c("Negative", "Positive")) +
+            theme(legend.position = "none")
+
+train <- ggplot(df.test, aes( x = Sentiment, y = after_stat(count) ) ) + 
+            geom_bar(aes(fill = Sentiment), stat = "count", position = "dodge" ) +
+            labs(title = "Testing Data",
+            y="Count", x=" ") +
+            theme(text = element_text(family = "LM Roman 10")) +
+            scale_fill_viridis_d(labels=c("Negative", "Positive")) +
+            theme(legend.position = "none")
+
+grid.arrange(test, train, ncol=2)
+rm(test, train)
 ```
 
 
@@ -269,7 +427,7 @@ write.csv(df.test, './nn_training.csv', row.names = FALSE)
 
   We define our text vectorization later here.  It will take our string input and convert that data to a tensor.
   
-```{r Text Vectorization Layer Creation}
+```{r Text Vectorization Layer Creation, message=FALSE, warning=FALSE}
 num_words <- 10000
 max_length <- 10
 text_vectorization <- layer_text_vectorization(
@@ -328,6 +486,8 @@ model %>% compile(optimizer = 'adam')
 
 ### Activation Functions
 
+  ReLU
+
   (reword) The last layer is densely connected with a single output node. Using the sigmoid activation function, this value is a float between 0 and 1, representing a probability, or confidence level.
 
 
@@ -337,7 +497,7 @@ model %>% compile(optimizer = 'adam')
 ### Stopping Criteria
 
 
-### EvaluationMetric
+### Evaluation Metric
 
   Accuracy
 
@@ -375,7 +535,6 @@ history <- model %>% fit(
 > Evaluate the model training process and its relevant outcomes by doing the following: Discuss the impact of using stopping criteria instead of defining the number of epochs, including a screenshot showing the final training epoch.
 
 
-
 ## D2: Loss and Accuracy
 
 > Evaluate the model training process and its relevant outcomes by doing the following: Provide visualizations of the model’s training process, including a line graph of the loss and chosen evaluation metric.
@@ -389,6 +548,7 @@ results
 ## D3: Model Fitness
 
 > Evaluate the model training process and its relevant outcomes by doing the following: Assess the fitness of the model and any measures taken to address overfitting.
+
 
 ## D4: Predictive Accuracy
 
@@ -421,7 +581,7 @@ training <- df[split.index,]
 testing <- df[-split.index,]
 
 num_words <- 10000
-max_length <- 50
+max_length <- 10
 text_vectorization <- layer_text_vectorization(
   max_tokens = num_words, 
   output_sequence_length = max_length, 
@@ -459,7 +619,7 @@ model %>% compile(
 history <- model %>% fit(
             training$Review,
             as.numeric(training$Sentiment == 1),
-            epochs = 20,
+            epochs = 15,
             batch_size = 100,
             validation_split = 0.1,
             verbose=2)
@@ -476,7 +636,7 @@ plot(history)
 
 ## G: Recommendations
 
-> Recommend a course of action based on your results.
+  Despite the "black box" nature of Sentiment Analysis as a subset of Natural Language Processing methods using Deep Neural Networks, we have successfully demonstrated the requsted proof of concept as directed by hospital administrators.
 
 
 \newpage
@@ -498,7 +658,7 @@ plot(history)
 
 ## K:  Communication Standards
   
-  Content has been edited for professionalism and appropriate communication standards.
+  Content has been edited for professionalism and appropriate communication standards. The formats of this submission adhere to rubric requirements.
   
 
 \newpage
@@ -511,3 +671,7 @@ https://doi.org/10.1145/2783258.2783380
 Maas, A., Daly, R., Pham, P.,  Huang, D., Ng, A. & Potts, C. (2011). Learning Word Vectors for Sentiment Analysis. 142-150. https://aclanthology.org/P11-1015
 
 RStudio Team (2022). RStudio: Integrated Development Environment for R. RStudio, PBC, Boston, MA. http://www.rstudio.com/.
+
+
+https://towardsdatascience.com/understanding-relu-the-most-popular-activation-function-in-5-minutes-459e3a2124f
+https://towardsdatascience.com/activation-functions-neural-networks-1cbd9f8d91d6
